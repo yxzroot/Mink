@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mink"
+version = "0.1.0"
+description = "A tiny animated terminal companion and MPRIS controller"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+[project.scripts]
+mink = "mink.launcher:main"
+
+[tool.setuptools.packages.find]
+include = ["mink*"]
