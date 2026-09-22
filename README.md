@@ -118,4 +118,4 @@ the terminal through curses cleanup on exit.
 
 ## Credits
 
-I'm a lazy chud and GitHub Copilot pushed the project for me :3
+I'm a lazy chud so GitHub Copilot pushed the project for me :3
