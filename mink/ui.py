@@ -9,7 +9,12 @@ import time
 from typing import Optional
 
 from .core import Pet, PetState, Track
+from .config import Config, load_config
 from .media import Player
+from . import __version__
+from .theme import Theme, get_theme
+from .status import SystemStatus, read_status
+from .animation import get_animation
 
 
 IDLE_FRAMES = (
@@ -37,10 +42,6 @@ REACTION_FRAMES = {
     "music_vibe": MUSIC_FRAMES,
     "sleep_breathe": SLEEP_FRAMES,
 }
-REACTION_FRAMES = (
-    ("/\\_/\\\\", "( >.< )", " > ^ <"),
-    ("/\\_/\\\\", "( >.< )", " > ^ <"),
-)
 ALEX_FRAMES = (
     ("/\\_/\\\\", "( ^.^ )", " > ^ <"),
     ("/\\_/\\\\", "( ^.^ )", " > ^ <"),
@@ -68,17 +69,35 @@ def _time(seconds: float) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
+def layout_mode(width: int, height: int, preference: str = "auto") -> str:
+    if preference in {"stacked", "columns"}:
+        return preference
+    if width >= 80 and height >= 7:
+        return "columns"
+    return "stacked"
+
+
 class MinkUI:
-    def __init__(self, stdscr: "curses.window", player: Optional[Player] = None):
+    def __init__(self, stdscr: "curses.window", player: Optional[Player] = None,
+                 config: Optional[Config] = None,
+                 theme: Optional[Theme] = None):
         self.screen = stdscr
         self.player = player or Player()
-        self.pet = Pet()
+        self.config = config or load_config()
+        self.theme = theme or get_theme(self.config.theme)
+        self.pet = Pet(config=self.config)
         self.track = Track()
         self.previous_track = Track()
         self.socket_path = os.environ.get("MINK_SOCKET", "")
         self.command_socket: Optional[socket.socket] = None
         self._last_pane_command = ""
         self._last_draw = 0.0
+        self._started = time.monotonic()
+        self._status = SystemStatus("", "0m 00s", "CPU n/a", "RAM n/a")
+        self._next_status = 0.0
+        self._started_animation = self.config.startup_animation
+        if self._started_animation:
+            self.pet.event("waking", self._started)
 
     def _open_commands(self) -> None:
         if not self.socket_path:
@@ -179,12 +198,23 @@ class MinkUI:
         if self.pet.reaction == "terminal":
             return (("/\\_/\\\\", "( >.< )", " > ^ <"),
                     ("/\\_/\\\\", "( o.o )", " > ^ <"))
+        if self.pet.animation_name in {
+                "idle", "walking", "dancing", "sleeping", "happy",
+                "annoyed", "excited", "waking", "blink", "sleepy",
+                "angry", "surprised", "looking_around", "stretching",
+                "eating", "drinking", "playing", "love", "goodbye"}:
+            return get_animation(self.pet.animation_name).frames
         if self.pet.reaction in REACTION_FRAMES:
-            return REACTION_FRAMES[self.pet.reaction]
+            return self.theme.reactions.get(
+                self.pet.reaction, REACTION_FRAMES[self.pet.reaction])
         return {
-            PetState.IDLE: IDLE_FRAMES,
-            PetState.MUSIC: MUSIC_FRAMES,
-            PetState.SLEEP: SLEEP_FRAMES,
+            PetState.IDLE: self.theme.idle,
+            PetState.MUSIC: self.theme.music,
+            PetState.SLEEPING: self.theme.sleeping,
+            PetState.HAPPY: self.theme.idle,
+            PetState.ANNOYED: self.theme.reactions["annoyed"],
+            PetState.EXCITED: self.theme.music,
+            PetState.WAKING: self.theme.idle,
         }[self.pet.state]
 
     def _configure_input(self) -> None:
@@ -207,12 +237,28 @@ class MinkUI:
                 return
             if key == curses.KEY_MOUSE:
                 try:
-                    curses.getmouse()
-                except curses.error:
+                    _, _, _, _, buttons = curses.getmouse()
+                    if buttons & (curses.BUTTON1_CLICKED | curses.BUTTON1_PRESSED):
+                        self.pet.interact()
+                except (curses.error, ValueError):
                     pass
                 continue
             if key == curses.KEY_RESIZE:
+                curses.update_lines_cols()
                 continue
+            if key in (ord("h"), ord("H"), ord(" ")):
+                self.pet.interact()
+            elif key in (ord("a"), ord("A")):
+                self.pet.event("annoyed")
+                self.pet.trigger_animation("annoyed")
+            elif key in (ord("e"), ord("E")):
+                self.pet.event("excited")
+            elif key in (ord("w"), ord("W")):
+                self.pet.event("waking")
+            elif key in (ord("p"), ord("P")):
+                self.pet.trigger_animation("playing")
+            elif 32 <= key < 127:
+                self.pet.trigger_animation("surprised")
             # Mink has no keyboard controls; do not leave a key ahead of
             # subsequent mouse reports in the curses input queue.
 
@@ -226,12 +272,23 @@ class MinkUI:
         cyan = curses.color_pair(1)
         purple = curses.color_pair(2)
         soft = curses.color_pair(3)
+        if time.monotonic() >= self._next_status:
+            self._status = read_status(self._started)
+            self._next_status = time.monotonic() + 1.0
         frames = self._pet_frames()
+        if self.pet.animation_name == "walking" and width < 40:
+            frames = get_animation("idle").frames
         lines = frames[self.pet.frame % len(frames)]
         status = "♫  playing  ♫" if self.track.status == "Playing" else (
             "·  paused  ·" if self.track.status == "Paused" else "·  waiting  ·")
         artist = _clip(self.track.artist or "unknown artist", max(1, width - 4))
         title = _clip(self.track.title or "untitled", max(1, width - 4))
+
+        if layout_mode(width, height, self.config.layout) == "columns":
+            self._draw_columns(lines, status, artist, title, height, width,
+                               cyan, purple, soft)
+            self.screen.refresh()
+            return
 
         # If tmux temporarily collapses the pane below the normal seven-row
         # layout, keep the pet and every playback field visible in columns.
@@ -271,13 +328,13 @@ class MinkUI:
             next_row += 1
 
         status = _clip(status, width)
-        self._safe(next_row, _center(status, width), status, purple)
-        next_row += 1
-
-        self._safe(next_row, _center(artist, width), artist, soft)
-        self._safe(next_row + 1, _center(title, width), title, soft)
-        next_row += 2
-        if self.track.status == "Playing" and next_row < height:
+        if self.config.music_visible:
+            self._safe(next_row, _center(status, width), status, purple)
+            next_row += 1
+            self._safe(next_row, _center(artist, width), artist, soft)
+            self._safe(next_row + 1, _center(title, width), title, soft)
+            next_row += 2
+        if self.config.music_visible and self.track.status == "Playing" and next_row < height:
             progress = _bar(self.track.progress, max(0, width - 4))
             timing = f"{_time(self.track.position)} / {_time(self.track.duration)}"
             if next_row == height - 1:
@@ -286,15 +343,55 @@ class MinkUI:
                 compact_progress = _bar(self.track.progress, compact_width)
                 compact = _clip(f"{compact_progress} {timing}", width)
                 self._safe(next_row, _center(compact, width), compact, cyan)
-                self.screen.refresh()
-                return
-            if progress:
-                self._safe(next_row, _center(progress, width), progress, cyan)
-            next_row += 1
-            if next_row < height:
-                timing = _clip(timing, width)
-                self._safe(next_row, _center(timing, width), timing, soft)
+                next_row += 1
+            else:
+                if progress:
+                    self._safe(next_row, _center(progress, width), progress, cyan)
+                next_row += 1
+                if next_row < height:
+                    self._safe(next_row, _center(_clip(timing, width), width),
+                               _clip(timing, width), soft)
+                    next_row += 1
+        if self.config.status_bar and next_row < height:
+            self._safe(next_row, 0, self._status_line(width), soft)
         self.screen.refresh()
+
+    def _status_line(self, width: int) -> str:
+        values = {
+            "song": self.track.title or "no music",
+            "uptime": self._status.uptime,
+            "cpu": self._status.cpu,
+            "ram": self._status.memory,
+            "hostname": self._status.hostname,
+            "version": f"Mink {__version__}",
+        }
+        items = [values[item.strip()]
+                 for item in self.config.status_items.split(",")
+                 if item.strip() in values]
+        return _clip("  ".join(items), width)
+
+    def _draw_columns(self, lines, status, artist, title, height, width,
+                      cyan, purple, soft) -> None:
+        pet_width = min(24, max(16, width // 3))
+        for row, line in enumerate(lines[:height]):
+            clipped = _clip(line, pet_width - 2)
+            self._safe(row, _center(clipped, pet_width), clipped,
+                       cyan if row else purple)
+        info_x = pet_width
+        info_width = max(1, width - info_x)
+        rows = [status, artist, title]
+        if self.track.status == "Playing":
+            rows.append(_bar(self.track.progress, max(0, info_width - 2)))
+            rows.append(f"{_time(self.track.position)} / "
+                        f"{_time(self.track.duration)}")
+        if not self.config.music_visible:
+            rows = [status]
+        for row, text in enumerate(rows[:height]):
+            self._safe(row, info_x + 1, _clip(text, info_width - 1),
+                       purple if row == 0 else soft)
+        if self.config.status_bar and len(rows) + 1 < height:
+            self._safe(len(rows) + 1, info_x + 1,
+                       self._status_line(info_width - 1), soft)
 
     def _command(self, command: str) -> bool:
         if command == "play":
@@ -318,9 +415,9 @@ class MinkUI:
     def run(self) -> None:
         curses.start_color()
         curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_CYAN, -1)
-        curses.init_pair(2, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(3, curses.COLOR_WHITE, -1)
+        curses.init_pair(1, self.theme.colors["cyan"], -1)
+        curses.init_pair(2, self.theme.colors["purple"], -1)
+        curses.init_pair(3, self.theme.colors["soft"], -1)
         self._configure_input()
         self._open_commands()
         next_poll = 0.0
@@ -329,13 +426,14 @@ class MinkUI:
                 now = time.monotonic()
                 for command in self._commands():
                     if command in {"quit", "close"}:
+                        self._goodbye()
                         return
                     self._command(command)
                 self._consume_input()
                 if now >= next_poll:
                     self.update(now)
-                    next_poll = now + 1.0
-                if now - self._last_draw >= 0.08:
+                    next_poll = now + self.config.poll_interval
+                if self.config.animation and now - self._last_draw >= self.config.tick_interval:
                     self.draw()
                     self._last_draw = now
                 time.sleep(0.025)
@@ -347,6 +445,12 @@ class MinkUI:
                     os.unlink(self.socket_path)
                 except FileNotFoundError:
                     pass
+
+    def _goodbye(self) -> None:
+        self.pet.trigger_animation("goodbye")
+        for _ in range(6):
+            self.draw()
+            time.sleep(0.04)
 
 
 def run_ui() -> None:

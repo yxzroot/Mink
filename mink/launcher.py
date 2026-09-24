@@ -8,6 +8,8 @@ import uuid
 from typing import Optional
 import shlex
 
+from . import __version__
+
 
 COMMANDS = {
     "play", "pause", "toggle", "next", "prev", "previous",
@@ -89,6 +91,9 @@ def main() -> int:
         print("usage: mink start|play|pause|toggle|next|prev|volume N|status|quit|close")
         print("mink close    Completely close Mink and clean up its process/resources")
         return 0
+    if command_name in {"--version", "version"}:
+        print(f"Mink {__version__}")
+        return 0
     if command_name != "start":
         print(f"mink: unknown command: {command_name}", file=sys.stderr)
         return 2
@@ -108,10 +113,14 @@ def main() -> int:
     root = os.path.realpath(root)
     shell = os.environ.get("MINK_SHELL") or os.environ.get("SHELL") or "/bin/sh"
     cwd = os.getcwd()
-    subprocess.run(["env", f"MINK_SOCKET={socket_path}",
-                    f"MINK_SESSION={session}", f"MINK_SHELL={shell}",
-                    tmux, "new-session", "-d", "-s", session, "-c", cwd, shell],
-                   check=True)
+    try:
+        subprocess.run(["env", f"MINK_SOCKET={socket_path}",
+                        f"MINK_SESSION={session}", f"MINK_SHELL={shell}",
+                        tmux, "new-session", "-d", "-s", session, "-c", cwd, shell],
+                       check=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        print(f"mink: could not create tmux session: {error}", file=sys.stderr)
+        return 1
     # Keep the split visually seamless: Mink should feel embedded, not boxed in.
     for option, value in (
         ("pane-border-style", "fg=black,bg=black"),
@@ -129,9 +138,14 @@ def main() -> int:
     ])
     # Keep the shell full-width while reserving enough rows for the pet and
     # complete playback metadata at laptop-sized terminal heights.
-    subprocess.run([tmux, "split-window", "-v", "-l", "9",
-                    "-t", f"{session}:0.0", "-c", cwd,
-                    direct], check=True)
+    try:
+        subprocess.run([tmux, "split-window", "-v", "-l", "9",
+                        "-t", f"{session}:0.0", "-c", cwd,
+                        direct], check=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        subprocess.run([tmux, "kill-session", "-t", session], check=False)
+        print(f"mink: could not create the pet pane: {error}", file=sys.stderr)
+        return 1
     mink_pane = f"{session}:0.1"
     subprocess.run([tmux, "set-option", "-t", session, "mouse", "on"],
                    check=True)

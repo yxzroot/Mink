@@ -1,81 +1,50 @@
 # Mink
 
 Mink is a tiny animated terminal companion and lightweight Linux music
-controller. It lives in a small tmux pane, so the adjacent pane remains a
-normal interactive shell: commands, scrollback, signals, and terminal
-programs continue to work normally.
+controller. It lives in a private tmux split, so the shell next to it stays a
+real shell.
 
-## Download
+## Version 0.1.2
 
-Clone the public repository and install the global launcher:
+This release adds a responsive music panel, configurable themes and behavior,
+more pet moods, optional system status, and reliable mouse-wheel protection.
+
+## Features
+
+- Responsive pet and music layout for small laptop panes and wide terminals.
+- Song, artist, playback state, progress, and timing from `playerctl`.
+- Clean offline fallback when no player or metadata is available.
+- Data-driven idle, blink, sleepy, sleeping, waking, happy, excited, annoyed,
+  surprised, looking-around, stretching, dancing, eating, drinking, playing,
+  love, and goodbye animation sequences.
+- Catppuccin Mocha, Tokyo Night, Dracula, Nord, Forest, Sunset, and default
+  Mink themes.
+- Optional status bar with song, uptime, CPU load, RAM, hostname, and version.
+- Mouse wheel over Mink never enters tmux copy mode or terminal scrollback.
+- No Python dependencies beyond the standard library.
+
+## Install and launch
+
+Requirements:
+
+- Linux
+- Python 3.9+
+- tmux
+- Optional: `playerctl` and an MPRIS-compatible music player
 
 ```sh
 git clone https://github.com/yxzroot/Mink.git
 cd Mink
 ./install.sh
-```
-
-After that one-time setup, launch Mink from any directory:
-
-```sh
 mink start
 ```
 
-## Requirements
+Use `mink close` to stop the private session cleanly. `mink --version` prints
+the installed version.
 
-- Linux
-- Python 3.9+
-- [tmux](https://github.com/tmux/tmux)
-- Optional: `playerctl` and an MPRIS-compatible music player
+## Controls
 
-Arch/CachyOS:
-
-```sh
-sudo pacman -S tmux playerctl
-```
-
-## Install and run
-
-From a checkout:
-
-```sh
-cd ~/Desktop/mink
-./install.sh
-```
-
-If `~/.local/bin` is not already on the current shell's `PATH`, either open a
-new shell or run:
-
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-For fish, use:
-
-```fish
-fish_add_path "$HOME/.local/bin"
-```
-
-The installer automatically adds this path to fish's persistent user path when
-fish is installed. Bash and other shells need a new shell (or the one-line
-`export` above) to refresh their current environment.
-
-After setup, start Mink from any directory:
-
-```sh
-mink start
-```
-
-The installer places one launcher at `~/.local/bin/mink`. The launcher points
-to this checkout; it does not copy the project or require pip. `mink start`
-opens a private tmux session with your shell above and a compact, borderless
-Mink area along the bottom. If Mink is already running,
-the command leaves the existing instance alone. Run `mink quit` to close it and
-return to the original terminal. The shell pane is intentionally not emulated
-by Mink.
-
-Mink does not capture keyboard input from the shell. Control the running
-instance from the shell:
+Commands control the music player from the shell:
 
 ```sh
 mink play
@@ -85,41 +54,55 @@ mink next
 mink prev
 mink volume 80
 mink status
-mink quit
 mink close
 ```
 
-The pet pane is display-only, so the shell remains completely normal. Use
-`mink help` for the complete command list.
+When the Mink pane has focus, `h` or Space makes the pet happy, `a` makes it
+annoyed, `e` makes it excited, and `w` starts a waking reaction. Clicking the
+pet also creates a small happy reaction. Wheel input is consumed and does not
+scroll terminal history.
 
-If no MPRIS player or `playerctl` is available, Mink remains a useful animated
-pet and displays a short offline message.
+## Configuration
 
-## Layout and configuration
+Mink works without a config file. Optional JSON configuration lives at:
 
-The pane is deliberately compact. tmux can resize it as usual, and Mink
-stacks playback metadata beside or below the pet when the pane is small. The
-`MINK_SHELL` environment variable can select the shell used for the session;
-otherwise `$SHELL` (or `/bin/sh`) is used.
+```text
+~/.config/mink/config.json
+```
 
-Mink enables mouse handling only for its private tmux session. Wheel events
-over the display pane are consumed without entering tmux copy mode or moving
-terminal scrollback; the adjacent shell remains a normal interactive pane.
+Set `MINK_CONFIG` to use another path. Environment variables override JSON
+values. Available settings include:
 
-This first version keeps configuration intentionally small. Future settings
-can be added without changing the shell integration because the pet is an
-independent tmux pane.
+```json
+{
+  "theme": "catppuccin-mocha",
+  "sleep_after": 22,
+  "tick_interval": 0.08,
+  "animation_speed": 1.0,
+  "poll_interval": 1,
+  "animation": true,
+  "random_idle": true,
+  "music_visible": true,
+  "status_bar": true,
+  "status_items": "song,uptime,hostname",
+  "layout": "auto",
+  "startup_animation": true
+}
+```
+
+`layout` may be `auto`, `stacked`, or `columns`. Invalid values safely use
+defaults. The equivalent environment overrides are `MINK_THEME`,
+`MINK_SLEEP_AFTER`, `MINK_TICK_INTERVAL`, `MINK_POLL_INTERVAL`,
+`MINK_ANIMATION_SPEED`, `MINK_RANDOM_IDLE`,
+`MINK_ANIMATION`, `MINK_MUSIC_VISIBLE`, `MINK_STATUS_BAR`,
+`MINK_STATUS_ITEMS`, `MINK_LAYOUT`, and `MINK_STARTUP_ANIMATION`.
 
 ## Development
 
 ```sh
 python3 -m unittest discover -s tests -v
-python3 -m mink --direct   # run inside an existing tmux pane
+python3 -m mink --direct
 ```
 
-Mink polls playerctl once per second, redraws only its own pane, and restores
-the terminal through curses cleanup on exit.
-
-## Credits
-
-I'm a lazy chud so GitHub Copilot pushed the project for me :3
+The UI uses one lightweight loop, redraws only on its animation cadence, polls
+music once per second, and restores terminal state through `curses.wrapper`.
