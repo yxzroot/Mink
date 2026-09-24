@@ -127,10 +127,24 @@ def main() -> int:
         shlex.quote(sys.executable),
         "-m", "mink", "--direct",
     ])
-    # Keep the shell full-width and place Mink in a shallow bottom pane.
-    subprocess.run([tmux, "split-window", "-v", "-l", "8",
+    # Keep the shell full-width while reserving enough rows for the pet and
+    # complete playback metadata at laptop-sized terminal heights.
+    subprocess.run([tmux, "split-window", "-v", "-l", "9",
                     "-t", f"{session}:0.0", "-c", cwd,
                     direct], check=True)
+    mink_pane = f"{session}:0.1"
+    subprocess.run([tmux, "set-option", "-t", session, "mouse", "on"],
+                   check=True)
+    subprocess.run([tmux, "set-option", "-p", "-t", mink_pane,
+                    "@mink_pane", "1"], check=True)
+    # tmux must claim wheel input from the terminal, but must not enter
+    # copy-mode or scroll history when the pointer is over Mink's pane.
+    for wheel in ("WheelUpPane", "WheelDownPane"):
+        subprocess.run(
+            [tmux, "bind-key", "-T", "root", wheel, "if-shell", "-F",
+             "#{@mink_pane}", "run-shell -b ':'", "send-keys -M"],
+            check=True,
+        )
     subprocess.run([tmux, "select-pane", "-t", f"{session}:0.0"], check=True)
     if os.environ.get("TMUX"):
         return subprocess.run([tmux, "switch-client", "-t", session]).returncode

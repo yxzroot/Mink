@@ -98,9 +98,13 @@ pet and displays a short offline message.
 ## Layout and configuration
 
 The pane is deliberately compact. tmux can resize it as usual, and Mink
-automatically hides optional metadata when its pane is too small. The
+stacks playback metadata beside or below the pet when the pane is small. The
 `MINK_SHELL` environment variable can select the shell used for the session;
 otherwise `$SHELL` (or `/bin/sh`) is used.
+
+Mink enables mouse handling only for its private tmux session. Wheel events
+over the display pane are consumed without entering tmux copy mode or moving
+terminal scrollback; the adjacent shell remains a normal interactive pane.
 
 This first version keeps configuration intentionally small. Future settings
 can be added without changing the shell integration because the pet is an

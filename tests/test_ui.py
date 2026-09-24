@@ -1,4 +1,6 @@
 import unittest
+import curses
+from unittest.mock import patch
 
 from mink.ui import ALEX_FRAMES, MinkUI
 from mink.launcher import COMMANDS
@@ -22,6 +24,34 @@ class UITests(unittest.TestCase):
 
     def test_close_is_a_global_control_command(self):
         self.assertIn("close", COMMANDS)
+
+    def test_input_setup_enables_curses_mouse_reporting(self):
+        class Screen:
+            def nodelay(self, _enabled):
+                pass
+
+        ui = MinkUI(Screen())
+        with patch("mink.ui.curses.mousemask") as mousemask, \
+                patch("mink.ui.curses.mouseinterval"), \
+                patch.object(ui.screen, "nodelay"):
+            ui._configure_input()
+
+        mousemask.assert_called_once_with(curses.ALL_MOUSE_EVENTS)
+
+    def test_mouse_events_are_consumed_without_blocking_later_mouse_events(self):
+        class Screen:
+            def __init__(self):
+                self.keys = [curses.KEY_MOUSE, ord("q"), curses.KEY_MOUSE, -1]
+
+            def getch(self):
+                return self.keys.pop(0)
+
+        screen = Screen()
+        ui = MinkUI(screen)
+        with patch("mink.ui.curses.getmouse") as getmouse:
+            ui._consume_input()
+
+        self.assertEqual(getmouse.call_count, 2)
 
 
 if __name__ == "__main__":

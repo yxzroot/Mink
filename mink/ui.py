@@ -168,8 +168,8 @@ class MinkUI:
     def _safe(self, y: int, x: int, text: str, attr: int = 0) -> None:
         try:
             width = self.screen.getmaxyx()[1]
-            if 0 <= y < self.screen.getmaxyx()[0] and x < width - 1:
-                self.screen.addnstr(y, x, text, width - x - 1, attr)
+            if 0 <= y < self.screen.getmaxyx()[0] and 0 <= x < width:
+                self.screen.addnstr(y, x, text, width - x, attr)
         except curses.error:
             pass
 
@@ -187,10 +187,39 @@ class MinkUI:
             PetState.SLEEP: SLEEP_FRAMES,
         }[self.pet.state]
 
+    def _configure_input(self) -> None:
+        """Route mouse reports to curses instead of the terminal scrollback."""
+        try:
+            curses.mousemask(curses.ALL_MOUSE_EVENTS)
+            curses.mouseinterval(0)
+            self.screen.nodelay(True)
+        except curses.error:
+            pass
+
+    def _consume_input(self) -> None:
+        """Consume input owned by the display-only Mink pane."""
+        while True:
+            try:
+                key = self.screen.getch()
+            except curses.error:
+                return
+            if key == -1:
+                return
+            if key == curses.KEY_MOUSE:
+                try:
+                    curses.getmouse()
+                except curses.error:
+                    pass
+                continue
+            if key == curses.KEY_RESIZE:
+                continue
+            # Mink has no keyboard controls; do not leave a key ahead of
+            # subsequent mouse reports in the curses input queue.
+
     def draw(self) -> None:
         height, width = self.screen.getmaxyx()
         self.screen.erase()
-        if height < 5 or width < 12:
+        if height < 4 or width < 12:
             self._safe(0, 0, "mink")
             self.screen.refresh()
             return
@@ -199,30 +228,72 @@ class MinkUI:
         soft = curses.color_pair(3)
         frames = self._pet_frames()
         lines = frames[self.pet.frame % len(frames)]
-        # Mink lives in the top-right corner; leave the rest of the pane quiet.
-        top = 1
+        status = "♫  playing  ♫" if self.track.status == "Playing" else (
+            "·  paused  ·" if self.track.status == "Paused" else "·  waiting  ·")
+        artist = _clip(self.track.artist or "unknown artist", max(1, width - 4))
+        title = _clip(self.track.title or "untitled", max(1, width - 4))
+
+        # If tmux temporarily collapses the pane below the normal seven-row
+        # layout, keep the pet and every playback field visible in columns.
+        if height < 7:
+            pet_width = min(8, max(1, width // 3))
+            for row, line in enumerate(lines[:height]):
+                clipped = _clip(line, pet_width)
+                self._safe(row, max(0, (pet_width - len(clipped)) // 2),
+                           clipped, cyan if row else purple)
+            info_x = pet_width
+            info_width = max(1, width - info_x)
+            compact_rows = (
+                _clip(status, info_width),
+                _clip(artist, info_width),
+                _clip(title, info_width),
+                _clip(f"{_time(self.track.position)} / "
+                      f"{_time(self.track.duration)}", info_width),
+            )
+            for row, text in enumerate(compact_rows[:height]):
+                self._safe(row, info_x, text, purple if row == 0 else soft)
+            self.screen.refresh()
+            return
+
+        # Build one vertical flow so the pet can never cover or displace metadata.
+        # The launcher provides nine rows, but this also remains usable when tmux
+        # temporarily gives the pane fewer rows during a resize.
+        top = 1 if height >= 10 else 0
         for row, line in enumerate(lines):
-            self._safe(top + row, _center(line, width), line,
+            clipped = _clip(line, width)
+            self._safe(top + row, _center(clipped, width), clipped,
                        cyan if row else purple)
-        if self.pet.reaction == "alex_g" and height >= 8:
+        next_row = top + len(lines)
+        if self.pet.reaction == "alex_g" and height >= 11:
             message = "dev: i love alex g too <3"
-            self._safe(top + len(lines) + 1, _center(message, width),
-                       _clip(message, width - 1), purple)
-        if width >= 18 and height >= 9:
-            status = "♫  playing  ♫" if self.track.status == "Playing" else (
-                "·  paused  ·" if self.track.status == "Paused" else "·  waiting  ·")
-            info_top = top + len(lines) + 2
-            self._safe(info_top, _center(status, width), status, purple)
-            if self.track.available and info_top + 4 < height:
-                artist = _clip(self.track.artist or "unknown artist", width - 4)
-                title = _clip(self.track.title or "untitled", width - 4)
-                self._safe(info_top + 1, _center(artist, width), artist, soft)
-                self._safe(info_top + 2, _center(title, width), title, soft)
-                if self.track.status == "Playing":
-                    progress = _bar(self.track.progress, width - 4)
-                    self._safe(info_top + 3, _center(progress, width), progress, cyan)
-                    timing = f"{_time(self.track.position)} / {_time(self.track.duration)}"
-                    self._safe(info_top + 4, _center(timing, width), timing, soft)
+            message = _clip(message, width)
+            self._safe(next_row, _center(message, width), message, purple)
+            next_row += 1
+
+        status = _clip(status, width)
+        self._safe(next_row, _center(status, width), status, purple)
+        next_row += 1
+
+        self._safe(next_row, _center(artist, width), artist, soft)
+        self._safe(next_row + 1, _center(title, width), title, soft)
+        next_row += 2
+        if self.track.status == "Playing" and next_row < height:
+            progress = _bar(self.track.progress, max(0, width - 4))
+            timing = f"{_time(self.track.position)} / {_time(self.track.duration)}"
+            if next_row == height - 1:
+                timing = _clip(timing, width)
+                compact_width = max(0, width - len(timing) - 1)
+                compact_progress = _bar(self.track.progress, compact_width)
+                compact = _clip(f"{compact_progress} {timing}", width)
+                self._safe(next_row, _center(compact, width), compact, cyan)
+                self.screen.refresh()
+                return
+            if progress:
+                self._safe(next_row, _center(progress, width), progress, cyan)
+            next_row += 1
+            if next_row < height:
+                timing = _clip(timing, width)
+                self._safe(next_row, _center(timing, width), timing, soft)
         self.screen.refresh()
 
     def _command(self, command: str) -> bool:
@@ -250,6 +321,7 @@ class MinkUI:
         curses.init_pair(1, curses.COLOR_CYAN, -1)
         curses.init_pair(2, curses.COLOR_MAGENTA, -1)
         curses.init_pair(3, curses.COLOR_WHITE, -1)
+        self._configure_input()
         self._open_commands()
         next_poll = 0.0
         try:
@@ -259,6 +331,7 @@ class MinkUI:
                     if command in {"quit", "close"}:
                         return
                     self._command(command)
+                self._consume_input()
                 if now >= next_poll:
                     self.update(now)
                     next_poll = now + 1.0
